@@ -1,5 +1,5 @@
 // Keeps the game's files on the device so it opens with no connection. Version changes whenever the game changes.
-const CACHE = 'sudoku-034c9994';
+const CACHE = 'sudoku-0144f4a1';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
