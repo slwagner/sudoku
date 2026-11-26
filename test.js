@@ -101,6 +101,26 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
     const shownOff = await page.locator('.notes i.on').count(), after = await st();
     check("showing what's possible fills every empty cell, turns off again, and is not an undo step", shownOn > 100 && shownOff === 1 && mid.undo.length === before.undo.length && after.undo.length === before.undo.length && after.notes.join() === before.notes.join());
   }
+  { // the reviewer's data-loss cases
+    await page.evaluate(() => { const s = window.__sudoku.state(); window.__keepId = s.id; });
+    const n0 = await page.evaluate(() => window.__sudoku.games().filter(g => !g.done).length);
+    await page.click('#menuBtn'); await page.click('.level[data-level="easy"]'); await page.waitForFunction(() => window.__sudoku.state().level === 'easy');
+    await page.evaluate(() => { window.__sudoku.state().elapsed = 600; });       // ten minutes of looking, nothing entered
+    await page.click('#menuBtn'); await page.click('.level[data-level="easy"]'); await page.waitForFunction(() => window.__sudoku.state().elapsed === 0);
+    const n1 = await page.evaluate(() => window.__sudoku.games().filter(g => !g.done).length);
+    check('a game with time on the clock is kept even if nothing was entered', n1 === n0 + 2);
+    await page.click('#menuBtn');
+    const del = page.locator('.gameDel').first(); await del.dblclick();
+    const n2 = await page.evaluate(() => window.__sudoku.games().filter(g => !g.done).length);
+    check('a fast double tap on Delete does not delete', n2 === n1);
+    await page.waitForTimeout(800); await page.locator('.gameDel.armed').click();
+    const n3 = await page.evaluate(() => window.__sudoku.games().filter(g => !g.done).length);
+    check('a second, deliberate tap does delete', n3 === n1 - 1);
+    const closeY = await page.evaluate(() => document.querySelector('#closeBtn').getBoundingClientRect().top);
+    check('Close stays at the top of the menu', closeY >= 0 && closeY < 120);
+    await page.evaluate(id => document.querySelector('.gameOpen[data-id="' + id + '"]').click(), await page.evaluate(() => window.__keepId));
+    await page.waitForFunction(() => window.__sudoku.state().id === window.__keepId);
+  }
   { // nudges: off the main screen, staged, and never write a digit
     const before = await st();
     const offMain = (await page.locator('#tools #hintBtn').count()) === 0 && !(await page.isVisible('#hintBtn'));
