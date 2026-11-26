@@ -87,7 +87,8 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 .cell.nu { background: var(--nudge-bg); }
 .cell.np { background: var(--nudge-bg); box-shadow: inset 0 0 0 2px var(--nudge); }
 .cell.nt { background: var(--nudge-bg); outline: 3px dashed var(--nudge); outline-offset: -5px; }
-.nudge { border-left: 4px solid var(--nudge); background: var(--key); border-radius: 4px 12px 12px 4px; padding: 8px 12px 0; font-size: 14px; }
+.cell.nt.sel, .cell.np.sel, .cell.nu.sel { background: var(--sel); }
+.nudge { border-left: 4px solid var(--nudge); background: var(--key); border-radius: 4px 12px 12px 4px; padding: 8px 12px 0; font-size: 14px; min-height: 112px; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box; }
 .nudge p { margin: 0; line-height: 1.4; -webkit-user-select: text; user-select: text; }
 .nudgeActions { display: flex; justify-content: flex-end; gap: 18px; }
 .nudgeActions .plain { min-height: 38px; }
@@ -167,6 +168,14 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
     <button class="chip timer" id="timerBtn" type="button" aria-label="Pause"><span id="clock">0:00</span><small id="timerHint">Pause</small></button>
   </div>
 
+  <div class="nudge" id="nudge" hidden>
+    <p id="nudgeText"></p>
+    <div class="nudgeActions">
+      <button class="plain" id="nudgeMore" type="button">Show where</button>
+      <button class="plain" id="nudgeClose" type="button">Close</button>
+    </div>
+  </div>
+
   <div class="boardWrap">
     <div class="board" id="board" role="grid" aria-label="Sudoku grid"></div>
     <div class="cover" id="pauseCover" hidden>
@@ -174,14 +183,6 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
       <button class="primary" id="resumeBtn" type="button">Resume</button>
     </div>
     <div class="cover" id="busyCover" hidden><p>Making a puzzle</p></div>
-  </div>
-
-  <div class="nudge" id="nudge" hidden>
-    <p id="nudgeText"></p>
-    <div class="nudgeActions">
-      <button class="plain" id="nudgeMore" type="button">Show where</button>
-      <button class="plain" id="nudgeClose" type="button">Close</button>
-    </div>
   </div>
 
   <div class="tools" id="tools">
@@ -209,7 +210,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
     <details class="pace">
       <summary>Your pace by kind of step</summary>
       <div id="paceRows"></div>
-      <p>Typical seconds from one correct digit to the next, from your own play on this device. A number appears after 30 examples.</p>
+      <p>Typical seconds from one correct digit to the next, from your own play on this device. A number appears after 30 examples. The first digit of a game, digits placed right after a nudge and stretches with a wrong digit on the board are left out.</p>
     </details>
     <div class="sheetActions">
       <button class="plain small" id="hintBtn" type="button">Nudge me</button>
@@ -901,10 +902,10 @@ const used = (c, lo, hi) => { let s = 0; for (let k = lo; k < hi; k++) s += c[TE
 const LEVELS = {
   easy:    { name: 'Easy',    note: 'one place in a box',  allow: 2,  clues: 38, ok: () => true },
   medium:  { name: 'Medium',  note: 'needs pointing',      allow: 5,  clues: 24, ok: c => { const n = c[TECHS[4]] || 0; return n >= 1 && n <= 5; } },
-  hard:    { name: 'Hard',    note: 'needs pairs',         allow: 8,  clues: 23, ok: c => used(c, 5, 8) >= 1 && used(c, 4, 8) >= 4 },
+  hard:    { name: 'Hard',    note: 'pairs or claiming',         allow: 8,  clues: 23, ok: c => used(c, 5, 8) >= 1 && used(c, 4, 8) >= 4 },
   harder:  { name: 'Harder',  note: 'triples, X-Wing',     allow: 13, clues: 23, ok: c => used(c, 8, 13) >= 1 },
-  hardest: { name: 'Hardest', note: 'wings, swordfish',    tier: 5 },
-  extreme: { name: 'Extreme', note: 'chains',              tier: 6 }
+  hardest: { name: 'Hardest', note: 'wings, swordfish',    tier: 5, work: 5 },
+  extreme: { name: 'Extreme', note: 'chains',              tier: 6, work: 6 }
 };
 /* One try at a puzzle of this level. Returns { puzzle, solution, level, fits }. */
 function attempt(level) {
@@ -921,7 +922,9 @@ function attempt(level) {
     const ok = L.allow ? !!solveWith(puzzle, L.allow) : search(puzzle, 2).count === 1;
     if (ok) clues--; else puzzle[i] = keep;
   }
-  const fits = L.allow ? (L.ok(solveWith(puzzle, L.allow)) && clues <= L.clues + 3) : SV.grade(puzzle).tier === L.tier;
+  let fits;
+  if (L.allow) fits = L.ok(solveWith(puzzle, L.allow)) && clues <= L.clues + 3;
+  else { const g = SV.grade(puzzle); fits = g.tier === L.tier && used(g.counts, 4, TECHS.length) >= L.work; }
   return { puzzle, solution, level, fits };
 }
 function generate(level) {
@@ -930,14 +933,29 @@ function generate(level) {
   return g;
 }
 /* Same, in short slices so the screen stays responsive while a rare level is being made. */
-function generateAsync(level, done) {
+function generateAsync(level, done, gentle) {
   let n = 0;
   (function slice() {
-    const end = Date.now() + 25;
+    const end = Date.now() + (gentle ? 10 : 25);
     let g = null;
     do { g = attempt(level); n++; } while (!g.fits && n < 5000 && Date.now() < end);
-    if (g.fits || n >= 5000) done(g); else setTimeout(slice, 0);
+    if (g.fits || n >= 5000) done(g); else setTimeout(slice, gentle ? 80 : 0);
   })();
+}
+/* Harder puzzles are rare (about 1 try in 100), so one is kept ready and made quietly while you play. */
+const SLOW = 'harder';
+let filling = false;
+function fillPool() {
+  if (filling || store.get(K_POOL, null)) return;
+  filling = true;
+  generateAsync(SLOW, g => { filling = false; if (g.fits) store.set(K_POOL, g); }, true);
+}
+function takePool(level) {
+  if (level !== SLOW) return null;
+  const g = store.get(K_POOL, null);
+  if (!g || !Array.isArray(g.puzzle) || g.puzzle.length !== 81 || !Array.isArray(g.solution)) return null;
+  try { localStorage.removeItem(K_POOL); } catch (e) { /* ignore */ }
+  return g;
 }
 
 /* ---------- storage (the game still works if the browser refuses it) ---------- */
@@ -945,11 +963,11 @@ const store = {
   get(k, fallback) { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode or full */ } }
 };
-const K_GAME = 'sudoku.game.v1', K_SET = 'sudoku.settings.v1', K_BEST = 'sudoku.best.v2', K_STATS = 'sudoku.pace.v1';
+const K_GAME = 'sudoku.game.v1', K_SET = 'sudoku.settings.v1', K_BEST = 'sudoku.best.v2', K_STATS = 'sudoku.pace.v1', K_POOL = 'sudoku.ready.v1';
 
 /* ---------- state ---------- */
 let S = null;
-let paused = false;
+let paused = false, busy = false;
 const settings = Object.assign({ check: false }, store.get(K_SET, {}));
 const best = store.get(K_BEST, {});
 const pace = store.get(K_STATS, {});
@@ -967,7 +985,7 @@ function newGame(level, made) {
   S = {
     level, puzzle: g.puzzle, solution: g.solution, values: g.puzzle.slice(), notes: new Array(81).fill(0),
     hinted: [], undo: [], elapsed: 0, hints: 0, done: false, sel: -1, focus: 0, noteMode: false,
-    nudge: null, known: [], lastPlace: 0
+    nudge: null, known: [], lastPlace: null, lastHints: 0, timed: []
   };
   paused = false;
   save(); render();
@@ -985,10 +1003,15 @@ const KINDS = {
   deeper: 'Needed pointing, a pair or more first'
 };
 function recordPace(i, d) {
-  if (S.values.some((v, k) => v && v !== S.solution[k])) return;
-  const dt = S.elapsed - (S.lastPlace || 0);
-  S.lastPlace = S.elapsed;
-  if (dt < 0 || dt > 300) return;
+  /* Left out: a cell already timed this game, the first digit of a game, anything right after a nudge,
+     and stretches with a wrong digit on the board. */
+  const timed = S.timed || (S.timed = []), first = S.lastPlace == null, nudged = S.hints !== (S.lastHints | 0);
+  const dt = S.elapsed - (S.lastPlace || 0), repeat = timed.includes(i);
+  if (S.values.some((v, k) => v && v !== S.solution[k])) { S.lastPlace = null; return; }
+  S.lastPlace = S.elapsed; S.lastHints = S.hints;
+  if (repeat) return;
+  timed.push(i);
+  if (first || nudged || dt < 0 || dt > 300) return;
   const cand = SV.initCandidates(S.values), bit = 1 << d;
   const only = ui => SV.UNITS[ui].every(j => j === i || !(cand[j] & bit));
   const kind = only(18 + boxOf(i)) ? 'box' : (only(i / 9 | 0) || only(9 + (i % 9))) ? 'line' : cand[i] === bit ? 'cell' : 'deeper';
@@ -1019,7 +1042,7 @@ const TECH_TEXT = {
   '2-string kite': ['a two-string kite', 'One digit has two places in a row and two in a column, joined through a box.'],
   'xy-wing': ['an XY-Wing', 'Three cells with two digits each, linked through one pivot cell.'],
   'xyz-wing': ['an XYZ-Wing', 'A pivot cell with three digits and two cells that each share two of them.'],
-  'w-wing': ['a W-Wing', 'Two cells with the same two digits, connected by a digit that has only two places in a line.'],
+  'w-wing': ['a W-Wing', 'Two cells with the same two digits, connected by a digit that has only two places in a row, column or box.'],
   'unique rectangle type 1': ['a unique rectangle', 'Four cells in a rectangle across two boxes would leave two solutions unless one of them breaks the pattern.'],
   'simple colouring': ['colouring', 'Follow one digit through the lines where it has only two places, alternating on and off.'],
   'x-chain': ['a chain on one digit', 'A chain of either-or links for one digit. Its two ends cannot both be off.'],
@@ -1027,16 +1050,30 @@ const TECH_TEXT = {
 };
 function candidatesNow() {
   const cand = SV.initCandidates(S.values);
-  for (let i = 0; i < 81; i++) if (!S.values[i] && S.notes[i] && (S.notes[i] >> S.solution[i] & 1)) cand[i] &= S.notes[i];
+  /* The player's notes count only when they are a real narrowing: at least two digits, all still possible, the true one among them. */
+  for (let i = 0; i < 81; i++) {
+    const n = S.notes[i];
+    if (!S.values[i] && n && !(n & ~cand[i]) && bits(n) >= 2 && (n >> S.solution[i] & 1)) cand[i] = n;
+  }
   for (const k of S.known) if ((k % 10) !== S.solution[k / 10 | 0]) cand[k / 10 | 0] &= ~(1 << (k % 10));
   return cand;
 }
 function nudge() {
-  if (S.done || paused) return;
+  if (S.done) return;
+  paused = false;
   const wrong = [];
   for (let i = 0; i < 81; i++) if (S.values[i] && S.values[i] !== S.solution[i]) wrong.push(i);
   if (wrong.length) S.nudge = { wrong, stage: 1 };
-  else { const step = SV.nextStep(S.values, candidatesNow()); S.nudge = step ? { step, stage: 1 } : { none: true, stage: 1 }; }
+  else {
+    const step = SV.nextStep(S.values, candidatesNow());
+    S.nudge = step ? { step, stage: 1 } : { none: true, stage: 1 };
+    if (step && step.place) {
+      /* Is this single visible from the digits on the board alone, or only after earlier eliminations? */
+      const plain = SV.initCandidates(S.values), c = step.place[0].cell, bit = 1 << step.place[0].digit;
+      const seen = step.units.length ? SV.UNITS[step.units[0]].every(j => j === c || !(plain[j] & bit)) : plain[c] === bit;
+      S.nudge.later = !seen;
+    }
+  }
   S.hints++; S.sel = -1; S.focus = 0;
   save(); render();
 }
@@ -1051,14 +1088,17 @@ function nudgeView() {
     return out;
   }
   const st = n.step, tx = TECH_TEXT[st.tech], last = st.units.length ? 3 : 2;
-  out.text = 'Look for ' + tx[0] + '. ' + tx[1];
+  out.text = 'Look for ' + tx[0] + '. ' + (n.later ? 'It only shows once you apply what was ruled out earlier.' : tx[1]);
   if (n.stage >= 2 && st.units.length) for (const u of st.units) for (const c of SV.UNITS[u]) out.unit.push(c);
   if (n.stage >= last) {
     if (st.place) { out.target = st.place.map(p => p.cell); out.text = 'Look for ' + tx[0] + '. It is the dashed cell.'; }
     else {
       out.pattern = st.cells; out.target = st.eliminate.map(e => e.cell);
       const ds = [...new Set(st.eliminate.map(e => e.digit))].sort();
-      out.text = tx[0].charAt(0).toUpperCase() + tx[0].slice(1) + ', in the outlined cells. So ' + ds.join(' and ') + ' cannot go in the dashed ' + (out.target.length === 1 ? 'cell' : 'cells') + '.';
+      const list = ds.length > 1 ? ds.slice(0, -1).join(', ') + ' and ' + ds[ds.length - 1] : '' + ds[0];
+      const name = tx[0].charAt(0).toUpperCase() + tx[0].slice(1), cells = out.target.length === 1 ? 'cell' : 'cells';
+      if (st.tech.startsWith('hidden')) out.text = name + ' of ' + st.digits.join(', ') + ' in the dashed ' + cells + '. Nothing else can go there, so ' + list + ' cannot.';
+      else out.text = name + ', in the outlined cells. So ' + list + ' cannot go in the dashed ' + cells + '.';
     }
   } else out.more = n.stage === 1 && st.units.length ? 'Show where' : 'Show more';
   return out;
@@ -1073,7 +1113,7 @@ function nudgeMore() {
 
 /* ---------- moves ---------- */
 function enter(d) {
-  if (S.done || paused) return;
+  if (S.done || paused || busy) return;
   const i = S.sel;
   if (i < 0 || !editable(i)) { S.focus = S.focus === d ? 0 : d; S.sel = -1; render(); return; }
   S.focus = 0; S.nudge = null;
@@ -1117,7 +1157,7 @@ function afterMove() {
 }
 function restart() {
   S.values = S.puzzle.slice(); S.notes = new Array(81).fill(0); S.hinted = []; S.undo = [];
-  S.elapsed = 0; S.hints = 0; S.done = false; S.record = false; S.sel = -1; S.focus = 0; S.nudge = null; S.known = []; S.lastPlace = 0;
+  S.elapsed = 0; S.hints = 0; S.done = false; S.record = false; S.sel = -1; S.focus = 0; S.nudge = null; S.known = []; S.lastPlace = null; S.lastHints = 0; S.timed = [];
   paused = false; save(); render();
 }
 
@@ -1223,7 +1263,7 @@ function closeSheet() { $('scrim').hidden = true; }
 function start() {
   build();
   const saved = store.get(K_GAME, null);
-  if (validSaved(saved)) { S = saved; S.sel = -1; S.focus = 0; S.hints = S.hints | 0; S.known = Array.isArray(S.known) ? S.known : []; S.nudge = null; S.lastPlace = S.lastPlace | 0; paused = !!S.paused && !S.done; render(); }
+  if (validSaved(saved)) { S = saved; S.sel = -1; S.focus = 0; S.hints = S.hints | 0; S.known = Array.isArray(S.known) ? S.known : []; S.nudge = null; S.lastPlace = null; paused = !!S.paused && !S.done; render(); }
   else newGame('medium');
 
   boardEl.addEventListener('click', e => {
@@ -1253,7 +1293,10 @@ function start() {
     if (!b || !confirmTap(b)) return;
     closeSheet();
     $('busyCover').hidden = false;
-    setTimeout(() => generateAsync(b.dataset.level, g => { newGame(g.level, g); $('busyCover').hidden = true; }), 30);
+    busy = true;
+    const ready = g => { busy = false; newGame(b.dataset.level, g); $('busyCover').hidden = true; setTimeout(fillPool, 3000); };
+    const kept = takePool(b.dataset.level);
+    if (kept) ready(kept); else setTimeout(() => generateAsync(b.dataset.level, ready), 30);
   });
   document.addEventListener('keydown', e => {
     if (!$('scrim').hidden) { if (e.key === 'Escape') closeSheet(); return; }
@@ -1274,6 +1317,7 @@ function start() {
       S.sel = i; S.focus = 0; render();
     }
   });
+  setTimeout(fillPool, 5000);
   setInterval(() => {
     if (S.done || paused || !$('scrim').hidden || document.visibilityState !== 'visible') return;
     S.elapsed++; drawClock();
