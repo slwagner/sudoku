@@ -1,7 +1,9 @@
-// Builds the installable copy (pwa/) from sudoku.html: a full HTML document plus manifest, service worker and icons.
+// Builds sudoku.html (one file, game.html with solver/solver.js inlined) and the installable copy (pwa/): a full HTML document plus manifest, service worker and icons.
 const fs = require('fs'), path = require('path');
 const dir = __dirname, out = path.join(dir, 'pwa');
-const src = fs.readFileSync(path.join(dir, 'sudoku.html'), 'utf8');
+const solver = fs.readFileSync(path.join(dir, 'solver', 'solver.js'), 'utf8').replace(/\nif \(typeof module[^\n]*\n?$/, '\n');
+const src = fs.readFileSync(path.join(dir, 'game.html'), 'utf8').replace('/*SOLVER*/', () => solver);
+fs.writeFileSync(path.join(dir, 'sudoku.html'), src);
 const cut = src.indexOf('<div class="app">');
 const head = src.slice(0, cut).replace('<meta name="claude:viewport-fit-sides" content="cover">\n', '');
 const body = src.slice(cut);

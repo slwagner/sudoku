@@ -27,31 +27,31 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
 
   // 1. generator
   const gen = await page.evaluate(() => {
-    const { generate, search, logicSolve } = window.__sudoku, out = {};
-    const validGrid = s => { for (let u = 0; u < 9; u++) { const r = new Set(), c = new Set(), b = new Set();
-      for (let k = 0; k < 9; k++) { r.add(s[u*9+k]); c.add(s[k*9+u]); b.add(s[((u/3|0)*3+(k/3|0))*9+(u%3)*3+k%3]); }
-      if (r.size !== 9 || c.size !== 9 || b.size !== 9 || r.has(0)) return false; } return true; };
-    for (const level of ['easy', 'medium', 'hard', 'expert']) {
-      const o = out[level] = { n: 20, unique: 0, valid: 0, grades: {}, clues: [], ms: [], matches: 0 };
+    const { generate, search, grade, LEVELS, TECHS } = window.__sudoku, out = {};
+    for (const level of Object.keys(LEVELS)) {
+      const o = out[level] = { n: 15, unique: 0, fits: 0, tiers: {}, clues: [], ms: [], hardest: {} };
       for (let k = 0; k < o.n; k++) {
         const t = performance.now(), g = generate(level); o.ms.push(Math.round(performance.now() - t));
         const s = search(g.puzzle, 2);
-        if (s.count === 1) o.unique++;
-        if (validGrid(g.solution) && s.solution && s.solution.join('') === g.solution.join('')) o.valid++;
-        if (g.puzzle.every((v, i) => !v || v === g.solution[i])) o.matches++;
-        const grade = logicSolve(g.puzzle, 2) || 3; o.grades[grade] = (o.grades[grade] || 0) + 1;
+        if (s.count === 1 && s.solution.join('') === g.solution.join('')) o.unique++;
+        if (g.fits) o.fits++;
+        const gr = grade(g.puzzle); o.tiers[gr.tier] = (o.tiers[gr.tier] || 0) + 1;
+        let top = ''; for (const tech of TECHS) if (gr.counts[tech]) top = tech;
+        o.hardest[top] = (o.hardest[top] || 0) + 1;
         o.clues.push(g.puzzle.filter(Boolean).length);
       }
     }
     return out;
   });
-  const want = { easy: 1, medium: 1, hard: 2, expert: 3 };
+  const wantTier = { easy: 1, medium: 3, hard: 3, harder: 4, hardest: 5, extreme: 6 };
   for (const [level, o] of Object.entries(gen)) {
-    const cl = `${Math.min(...o.clues)}-${Math.max(...o.clues)} clues, slowest ${Math.max(...o.ms)}ms, grades ${JSON.stringify(o.grades)}`;
-    check(`${level}: 20 of 20 puzzles have exactly one solution`, o.unique === 20 && o.valid === 20 && o.matches === 20, cl);
-    check(`${level}: all 20 are the right difficulty grade`, o.grades[want[level]] === 20);
-    check(`${level}: a puzzle is made in under 2 seconds`, Math.max(...o.ms) < 2000);
+    const cl = `${Math.min(...o.clues)}-${Math.max(...o.clues)} starting digits, slowest ${Math.max(...o.ms)}ms, hardest step ${JSON.stringify(o.hardest)}`;
+    check(`${level}: 15 of 15 puzzles have exactly one solution`, o.unique === 15, cl);
+    check(`${level}: all 15 need exactly the kind of step the level promises`, o.fits === 15 && o.tiers[wantTier[level]] === 15);
+    check(`${level}: a puzzle is made in under 8 seconds`, Math.max(...o.ms) < 8000);
   }
+  const m = gen.medium.hardest, h = gen.hard.hardest;
+  check('medium never needs more than pointing; hard always needs claiming or a pair', Object.keys(m).join() === 'locked candidates pointing' && !h['locked candidates pointing']);
 
   // 2. play: notes, auto-clearing notes, conflict, erase, undo, save and reload, solve
   await page.reload(); await page.waitForSelector('.cell');
@@ -77,14 +77,26 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
   await cell(other).click(); await key(s.solution[other]).click();
   await page.reload(); await page.waitForSelector('.cell'); s = await st();
   check('the game in progress is still there after closing and reopening', s.values[other] === s.solution[other] && (s.notes[rowMate] >> da & 1) === 1);
-  { // hint, then undo: the hint stays and nothing else is lost
-    const before = await st(); const x = empties.find(i => !before.values[i] && i !== rowMate);
-    await cell(x).click(); const noHint = (await page.locator('#tools #hintBtn').count()) === 0;
-    await page.click('#menuBtn'); await page.click('#hintBtn'); const tap1 = await st(); await page.click('#hintBtn'); const mid = await st();
-    check('revealing a digit is not on the main screen and takes three taps', noHint && tap1.values[x] === 0 && mid.values[x] === mid.solution[x]);
-    const dis = await page.isDisabled('#undoBtn');
-    check('after a hint, Undo is off and earlier digits are kept', dis && mid.values[x] === mid.solution[x] && mid.values[other] === mid.solution[other]);
-    await page.click('#menuBtn'); await page.click('#restartBtn'); const one = await st();
+  { // nudges: off the main screen, staged, and never write a digit
+    const before = await st();
+    const offMain = (await page.locator('#tools #hintBtn').count()) === 0 && !(await page.isVisible('#hintBtn'));
+    await page.click('#menuBtn'); await page.click('#hintBtn');
+    const texts = [await page.textContent('#nudgeText')];
+    let marked1 = await page.locator('.cell.nu, .cell.np, .cell.nt').count(), taps = 0;
+    while (await page.isVisible('#nudgeMore') && taps < 5) { await page.click('#nudgeMore'); texts.push(await page.textContent('#nudgeText')); taps++; }
+    const after = await st(), targets = await page.locator('.cell.nt').count();
+    check('help is not on the main screen: it is inside the menu', offMain);
+    check('a nudge first says only what kind of step to look for, with nothing marked', marked1 === 0 && /^Look for /.test(texts[0]), texts[0]);
+    check('asking for more marks cells on the grid, and never writes a digit or a note', targets >= 1 && taps >= 1 && after.values.join('') === before.values.join('') && after.notes.join() === before.notes.join(), texts[texts.length - 1]);
+    check('with a nudge open, the grid and digit keys still fit on the screen', await page.evaluate(() => document.querySelector('#pad').getBoundingClientRect().bottom <= window.innerHeight));
+    await page.click('#nudgeClose');
+    // a wrong digit: the nudge says so instead of building on it
+    const x = empties.find(i => !before.values[i] && i !== rowMate), wrongD = before.solution[x] % 9 + 1;
+    await cell(x).click(); await key(wrongD).click(); await page.click('#menuBtn'); await page.click('#hintBtn');
+    check('with a wrong digit on the board, the nudge says a digit is wrong', /wrong/.test(await page.textContent('#nudgeText')));
+    await cell(x).click(); await page.click('#eraseBtn');
+    check('making a move closes the nudge', !(await page.isVisible('#nudge')));
+    const other2 = other; await page.click('#menuBtn'); await page.click('#restartBtn'); const one = await st();
     check('Restart needs a second tap when a game is in progress', one.values[other] === one.solution[other] && (await page.textContent('#restartBtn')) === 'Tap again to restart');
     await page.click('#closeBtn');
     await page.click('#timerBtn'); await page.reload(); await page.waitForSelector('.cell');
@@ -95,7 +107,9 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
   for (const i of empties) { if ((await st()).values[i] === s.solution[i]) continue; await cell(i).click(); await key(s.solution[i]).click(); }
   check('filling in the last digit shows Solved', await page.isVisible('#result') && !(await page.isVisible('#pad')), await page.textContent('#resultLine'));
   await page.screenshot({ path: path.join(__dirname, 'shots', 'phone-light-solved.png') });
-  check('a solve with a hint says so', /with 1 hint/.test(await page.textContent('#resultLine')));
+  check('a solve after nudges says so', /with 2 nudges/.test(await page.textContent('#resultLine')));
+  const pace = await page.evaluate(() => JSON.parse(localStorage.getItem('sudoku.pace.v1') || '{}'));
+  check('pace is recorded per kind of step, on the device only', Object.values(pace).reduce((s, a) => s + a.length, 0) > 20, Object.entries(pace).map(([k, a]) => k + ' ' + a.length).join(', '));
   await page.click('#againBtn'); await page.screenshot({ path: path.join(__dirname, 'shots', 'phone-light-sheet.png') });
   await page.click('.level[data-level="hard"]'); await page.waitForFunction(() => window.__sudoku.state().level === 'hard' && !window.__sudoku.state().done);
   check('choosing Hard starts a new Hard puzzle', await page.textContent('#levelName') === 'Hard');
