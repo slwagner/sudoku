@@ -114,7 +114,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 }
 .cover p { margin: 0; color: var(--muted); }
 
-.tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .tool {
   border: 1px solid var(--key-edge); background: var(--key); border-radius: 12px; min-height: 46px;
   font-weight: 600; font-size: 15px; padding: 0 4px;
@@ -147,7 +147,17 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
   padding: 18px max(16px, env(safe-area-inset-right, 0px)) calc(18px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
   display: flex; flex-direction: column; gap: 10px; max-height: 100%; overflow-y: auto;
 }
-.sheet h2 { margin: 0 0 2px; font-size: 18px; }
+.sheet h2 { margin: 6px 0 2px; font-size: 18px; }
+.sheet:focus { outline: none; }
+.games { display: flex; flex-direction: column; gap: 6px; }
+.gameRow { display: flex; align-items: stretch; gap: 8px; }
+.gameOpen {
+  flex: 1; min-width: 0; border: 1px solid var(--key-edge); background: var(--key); border-radius: 12px; min-height: 50px; padding: 6px 14px;
+  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; text-align: left;
+}
+.gameOpen span { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.gameOpen.here { border-color: var(--line-strong); border-width: 2px; }
+.quiet { margin: 0; color: var(--muted); font-size: 14px; }
 .level {
   border: 1px solid var(--key-edge); background: var(--key); border-radius: 12px; min-height: 54px; padding: 8px 14px;
   display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; text-align: left; font-weight: 600;
@@ -164,7 +174,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 
 <div class="app">
   <div class="top" id="top">
-    <button class="chip" id="menuBtn" type="button" aria-haspopup="dialog"><span id="levelName">Medium</span><small>New</small></button>
+    <button class="chip" id="menuBtn" type="button" aria-haspopup="dialog"><span id="levelName">Medium</span><small>Menu</small></button>
     <button class="chip timer" id="timerBtn" type="button" aria-label="Pause"><span id="clock">0:00</span><small id="timerHint">Pause</small></button>
   </div>
 
@@ -187,6 +197,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 
   <div class="tools" id="tools">
     <button class="tool" id="undoBtn" type="button">Undo</button>
+    <button class="tool" id="redoBtn" type="button">Redo</button>
     <button class="tool" id="eraseBtn" type="button">Erase</button>
     <button class="tool" id="notesBtn" type="button" aria-pressed="false">Notes</button>
   </div>
@@ -200,9 +211,15 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 </div>
 
 <div class="scrim" id="scrim" hidden>
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="sheet" id="sheet" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
     <h2 id="sheetTitle">New puzzle</h2>
     <div id="levels" class="levels"></div>
+    <h2>Your games</h2>
+    <div id="games" class="games"></div>
+    <div class="row">
+      <label for="autoToggle">Show what's possible in every cell</label>
+      <input type="checkbox" id="autoToggle">
+    </div>
     <div class="row">
       <label for="checkToggle">Mark wrong digits in red</label>
       <input type="checkbox" id="checkToggle">
@@ -369,12 +386,13 @@ const store = {
   get(k, fallback) { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode or full */ } }
 };
-const K_GAME = 'sudoku.game.v1', K_SET = 'sudoku.settings.v1', K_BEST = 'sudoku.best.v2', K_STATS = 'sudoku.pace.v1', K_POOL = 'sudoku.ready.v1';
+const K_GAME = 'sudoku.game.v1', K_GAMES = 'sudoku.games.v1', K_CUR = 'sudoku.current.v1', K_SET = 'sudoku.settings.v1', K_BEST = 'sudoku.best.v2', K_STATS = 'sudoku.pace.v1', K_POOL = 'sudoku.ready.v1';
 
 /* ---------- state ---------- */
-let S = null;
+let S = null;      // the game on screen; always one of `games`
+let games = [];    // every game kept on this device, finished or not
 let paused = false, busy = false;
-const settings = Object.assign({ check: false }, store.get(K_SET, {}));
+const settings = Object.assign({ check: false, auto: false }, store.get(K_SET, {}));
 const best = store.get(K_BEST, {});
 const pace = store.get(K_STATS, {});
 const $ = id => document.getElementById(id);
@@ -384,21 +402,57 @@ const cellEls = [], keyEls = [];
 function validSaved(g) {
   const arr = (a, hi) => Array.isArray(a) && a.length === 81 && a.every(x => Number.isInteger(x) && x >= 0 && x <= hi);
   return g && LEVELS[g.level] && arr(g.puzzle, 9) && arr(g.solution, 9) && arr(g.values, 9) && arr(g.notes, 1022) &&
-    Array.isArray(g.hinted) && Array.isArray(g.undo) && typeof g.elapsed === 'number';
+    Array.isArray(g.undo) && typeof g.elapsed === 'number';
+}
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+function normalize(g) {
+  g.id = g.id || newId(); g.started = g.started || Date.now(); g.updated = g.updated || g.started;
+  g.hinted = Array.isArray(g.hinted) ? g.hinted : []; g.redo = Array.isArray(g.redo) ? g.redo : [];
+  g.excl = Array.isArray(g.excl) && g.excl.length === 81 ? g.excl : new Array(81).fill(0);
+  g.known = Array.isArray(g.known) ? g.known : []; g.timed = Array.isArray(g.timed) ? g.timed : [];
+  g.hints = g.hints | 0; g.sel = -1; g.focus = 0; g.nudge = null; g.lastPlace = null;
+  return g;
+}
+const touched = g => g.undo.length > 0 || g.redo.length > 0 || g.hints > 0 || g.values.some((v, i) => v !== g.puzzle[i]) || g.notes.some(Boolean) || g.excl.some(Boolean);
+const progress = g => { let open = 0, got = 0; for (let i = 0; i < 81; i++) if (!g.puzzle[i]) { open++; if (g.values[i]) got++; } return open ? Math.round(100 * got / open) : 100; };
+/* Leaving a game never throws it away. Only a board nobody touched is dropped. */
+function leaveCurrent() {
+  if (!S) return;
+  S.paused = false; S.updated = Date.now();
+  if (!S.done && !touched(S)) games = games.filter(g => g !== S);
+}
+function prune() {
+  const old = (a, n) => a.sort((x, y) => y.updated - x.updated).slice(n);
+  const drop = new Set(old(games.filter(g => g.done && g !== S), 30).concat(old(games.filter(g => !g.done && g !== S), 40)));
+  if (drop.size) games = games.filter(g => !drop.has(g));
 }
 function newGame(level, made) {
   const g = made || generate(level);
-  S = {
+  leaveCurrent();
+  S = normalize({
     level, puzzle: g.puzzle, solution: g.solution, values: g.puzzle.slice(), notes: new Array(81).fill(0),
-    hinted: [], undo: [], elapsed: 0, hints: 0, done: false, sel: -1, focus: 0, noteMode: false,
-    nudge: null, known: [], lastPlace: null, lastHints: 0, timed: []
-  };
+    undo: [], elapsed: 0, hints: 0, done: false, noteMode: S ? !!S.noteMode : false, lastHints: 0
+  });
+  games.push(S); prune();
   paused = false;
   save(); render();
 }
-function save() { S.paused = paused; store.set(K_GAME, S); }
+function openGame(id) {
+  const g = games.find(x => x.id === id);
+  if (!g || g === S) return;
+  leaveCurrent();
+  S = g; S.sel = -1; S.focus = 0; S.nudge = null; S.lastPlace = null;
+  paused = false;
+  save(); render();
+}
+function deleteGame(id) { games = games.filter(g => g.id !== id || g === S); save(); }
+function save() { S.paused = paused; S.updated = Date.now(); store.set(K_GAMES, games); store.set(K_CUR, S.id); }
 const editable = i => !S.puzzle[i] && !S.hinted.includes(i);
-const snap = i => ({ i, v: S.values[i], n: S.notes[i] });
+const snap = i => ({ i, v: S.values[i], n: S.notes[i], x: S.excl[i] });
+/* Every change the player makes goes on the undo list; a new change clears the redo list. */
+function remember(changes) { S.undo.push(changes); if (S.undo.length > 3000) S.undo.shift(); S.redo = []; }
+/* What is written small in a cell: the player's own notes, or everything still possible when that setting is on. */
+const smallDigits = (i, cand) => S.values[i] ? 0 : settings.auto ? (cand[i] & ~S.excl[i]) : S.notes[i];
 const fmt = s => { const h = s / 3600 | 0, m = (s % 3600) / 60 | 0, x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
 
 /* ---------- pace: how long each kind of step takes this player (kept on this device only) ---------- */
@@ -458,7 +512,7 @@ function candidatesNow() {
   const cand = SV.initCandidates(S.values);
   /* The player's notes count only when they are a real narrowing: at least two digits, all still possible, the true one among them. */
   for (let i = 0; i < 81; i++) {
-    const n = S.notes[i];
+    const n = settings.auto ? (S.excl[i] ? cand[i] & ~S.excl[i] : 0) : S.notes[i];
     if (!S.values[i] && n && !(n & ~cand[i]) && bits(n) >= 2 && (n >> S.solution[i] & 1)) cand[i] = n;
   }
   for (const k of S.known) if ((k % 10) !== S.solution[k / 10 | 0]) cand[k / 10 | 0] &= ~(1 << (k % 10));
@@ -525,8 +579,10 @@ function enter(d) {
   S.focus = 0; S.nudge = null;
   if (S.noteMode) {
     if (S.values[i]) return;
-    S.undo.push([snap(i)]);
-    S.notes[i] ^= 1 << d;
+    if (settings.auto) {
+      if (!(SV.initCandidates(S.values)[i] >> d & 1)) return;
+      remember([snap(i)]); S.excl[i] ^= 1 << d;
+    } else { remember([snap(i)]); S.notes[i] ^= 1 << d; }
   } else {
     const changes = [snap(i)];
     if (S.values[i] === d) S.values[i] = 0;
@@ -535,34 +591,38 @@ function enter(d) {
       S.values[i] = d; S.notes[i] = 0;
       for (const p of PEERS[i]) if (S.notes[p] & (1 << d)) { changes.push(snap(p)); S.notes[p] &= ~(1 << d); }
     }
-    S.undo.push(changes);
+    remember(changes);
   }
   afterMove();
 }
 function erase() {
   if (S.done || paused) return;
   const i = S.sel;
-  if (i < 0 || !editable(i) || (!S.values[i] && !S.notes[i])) return;
-  S.undo.push([snap(i)]);
-  S.values[i] = 0; S.notes[i] = 0; S.nudge = null;
+  const small = settings.auto ? S.excl[i] : S.notes[i];
+  if (i < 0 || !editable(i) || (!S.values[i] && !small)) return;
+  remember([snap(i)]);
+  S.values[i] = 0; S.nudge = null;
+  if (settings.auto) S.excl[i] = 0; else S.notes[i] = 0;
   afterMove();
 }
-function undo() {
-  if (S.done || paused || !S.undo.length) return;
-  const changes = S.undo.pop();
-  for (const c of changes) if (editable(c.i)) { S.values[c.i] = c.v; S.notes[c.i] = c.n; }
+function step(from, to) {
+  if (S.done || paused || !from.length) return;
+  const changes = from.pop(), now = changes.map(c => snap(c.i));
+  for (const c of changes) if (editable(c.i)) { S.values[c.i] = c.v; S.notes[c.i] = c.n; S.excl[c.i] = c.x | 0; }
+  to.push(now);
   S.sel = changes[0].i; S.focus = 0; S.nudge = null;
   afterMove();
 }
+const undo = () => step(S.undo, S.redo), redo = () => step(S.redo, S.undo);
 function afterMove() {
   if (S.values.every((v, i) => v === S.solution[i])) {
-    S.done = true; S.sel = -1; S.focus = 0; S.undo = []; S.nudge = null;
+    S.done = true; S.sel = -1; S.focus = 0; S.undo = []; S.redo = []; S.nudge = null;
     if (!S.hints && (!best[S.level] || S.elapsed < best[S.level])) { best[S.level] = S.elapsed; store.set(K_BEST, best); S.record = true; }
   }
   save(); render();
 }
 function restart() {
-  S.values = S.puzzle.slice(); S.notes = new Array(81).fill(0); S.hinted = []; S.undo = [];
+  S.values = S.puzzle.slice(); S.notes = new Array(81).fill(0); S.excl = new Array(81).fill(0); S.hinted = []; S.undo = []; S.redo = [];
   S.elapsed = 0; S.hints = 0; S.done = false; S.record = false; S.sel = -1; S.focus = 0; S.nudge = null; S.known = []; S.lastPlace = null; S.lastHints = 0; S.timed = [];
   paused = false; save(); render();
 }
@@ -590,7 +650,7 @@ function build() {
 function render() {
   const sel = S.sel, hi = (sel >= 0 ? S.values[sel] : 0) || S.focus || 0;
   const peers = sel >= 0 ? new Set(PEERS[sel]) : null;
-  const counts = new Array(10).fill(0);
+  const counts = new Array(10).fill(0), cand = settings.auto ? SV.initCandidates(S.values) : null;
   const nv = nudgeView(), nUnit = new Set(nv ? nv.unit : []), nPat = new Set(nv ? nv.pattern : []), nTar = new Set(nv ? nv.target : []);
   for (let i = 0; i < 81; i++) {
     const v = S.values[i], given = S.puzzle[i] > 0, el = cellEls[i];
@@ -600,13 +660,14 @@ function render() {
     if (i === sel) cls += ' sel'; else if (v && v === hi) cls += ' same'; else if (peers && peers.has(i)) cls += ' peer';
     if (v && (PEERS[i].some(p => S.values[p] === v) || (settings.check && !given && v !== S.solution[i]))) cls += ' bad';
     if (nTar.has(i)) cls += ' nt'; else if (nPat.has(i)) cls += ' np'; else if (nUnit.has(i)) cls += ' nu';
-    const key = cls + '|' + v + '|' + S.notes[i] + '|' + hi;
+    const small = smallDigits(i, cand);
+    const key = cls + '|' + v + '|' + small + '|' + hi;
     if (el._key === key) continue;
     el._key = key; el.className = cls;
     if (v) el.innerHTML = '<span>' + v + '</span>';
-    else if (S.notes[i]) {
+    else if (small) {
       let h = '<span class="notes">';
-      for (let d = 1; d <= 9; d++) h += '<i class="' + ((S.notes[i] >> d & 1) ? 'on' : '') + (d === hi ? ' hi' : '') + '">' + d + '</i>';
+      for (let d = 1; d <= 9; d++) h += '<i class="' + ((small >> d & 1) ? 'on' : '') + (d === hi ? ' hi' : '') + '">' + d + '</i>';
       el.innerHTML = h + '</span>';
     } else el.innerHTML = '';
     el.setAttribute('aria-label', 'Row ' + ((i / 9 | 0) + 1) + ', column ' + (i % 9 + 1) + ', ' + (v ? v + (given ? ', given' : '') : 'empty'));
@@ -621,6 +682,7 @@ function render() {
   $('notesBtn').setAttribute('aria-pressed', S.noteMode ? 'true' : 'false');
   $('notesBtn').textContent = S.noteMode ? 'Notes on' : 'Notes';
   $('undoBtn').disabled = !S.undo.length || S.done;
+  $('redoBtn').disabled = !S.redo.length || S.done;
   $('levelName').textContent = LEVELS[S.level].name;
   boardEl.classList.toggle('paused', paused);
   $('pauseCover').hidden = !paused;
@@ -639,10 +701,26 @@ function drawClock() { $('clock').textContent = fmt(S.elapsed); }
 function drawSheet() {
   for (const b of $('levels').children) {
     const k = b.dataset.level, L = LEVELS[k];
-    b.className = 'level' + (k === S.level ? ' current' : '');
+    b.className = 'level';
     b.innerHTML = '<b>' + L.name + '</b><span>' + L.note + (best[k] ? ' · best ' + fmt(best[k]) : '') + '</span>';
   }
-  $('checkToggle').checked = !!settings.check;
+  $('checkToggle').checked = !!settings.check; $('autoToggle').checked = !!settings.auto;
+  const when = ts => { const d = new Date(ts), n = new Date(); return d.toDateString() === n.toDateString() ? 'today' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
+  const open = games.filter(g => !g.done).sort((a, b) => (b === S) - (a === S) || b.updated - a.updated);
+  const done = games.filter(g => g.done).sort((a, b) => b.updated - a.updated);
+  let gh = '';
+  for (const g of open) {
+    gh += '<div class="gameRow"><button type="button" class="gameOpen' + (g === S ? ' here' : '') + '" data-id="' + g.id + '"><b>' + LEVELS[g.level].name + '</b><span>' +
+      progress(g) + '% filled · ' + fmt(g.elapsed) + ' · ' + (g === S ? 'on screen now' : when(g.updated)) + '</span></button>' +
+      (g === S ? '' : '<button type="button" class="plain small gameDel" data-id="' + g.id + '">Delete</button>') + '</div>';
+  }
+  if (!open.length) gh = '<p class="quiet">No unfinished games.</p>';
+  if (done.length) {
+    gh += '<details class="pace"><summary>Finished (' + done.length + ')</summary>';
+    for (const g of done) gh += '<div class="paceRow"><span>' + LEVELS[g.level].name + ' · ' + when(g.updated) + (g.hints ? ' · ' + g.hints + (g.hints === 1 ? ' nudge' : ' nudges') : '') + '</span><b>' + fmt(g.elapsed) + '</b></div>';
+    gh += '</details>';
+  }
+  $('games').innerHTML = gh;
   $('restartBtn').textContent = 'Restart this puzzle'; $('restartBtn').classList.remove('armed');
   $('hintBtn').hidden = S.done;
   let h = '';
@@ -652,24 +730,27 @@ function drawSheet() {
   }
   $('paceRows').innerHTML = h;
 }
-const inProgress = () => !S.done && (S.undo.length > 0 || S.hints > 0 || S.values.some((v, i) => v !== S.puzzle[i]) || S.notes.some(Boolean));
+const inProgress = () => !S.done && touched(S);
 let armed = null;
-/* First tap on something that would throw away a game in progress only asks; the second tap does it. */
-function confirmTap(b) {
-  if (!inProgress() || armed === b) { armed = null; return true; }
-  drawSheet(); armed = b; b.classList.add('armed');
-  if (b.id === 'restartBtn') b.textContent = 'Tap again to restart';
-  else b.lastChild.textContent = 'tap again to drop this game';
+/* Anything that throws work away asks first: the first tap only arms the button, the second tap does it. */
+function confirmTap(b, ask, needed) {
+  if (!needed || armed === b) { armed = null; return true; }
+  drawSheet();
+  const live = b.id ? b : $('games').querySelector('.gameDel[data-id="' + b.dataset.id + '"]');
+  armed = live; live.classList.add('armed'); live.textContent = ask;
   return false;
 }
-function openSheet() { armed = null; drawSheet(); $('scrim').hidden = false; $('levels').firstChild.focus(); }
+function openSheet() { armed = null; drawSheet(); $('scrim').hidden = false; $('sheet').scrollTop = 0; $('sheet').focus(); }
 function closeSheet() { $('scrim').hidden = true; }
 
 /* ---------- wiring ---------- */
 function start() {
   build();
-  const saved = store.get(K_GAME, null);
-  if (validSaved(saved)) { S = saved; S.sel = -1; S.focus = 0; S.hints = S.hints | 0; S.known = Array.isArray(S.known) ? S.known : []; S.nudge = null; S.lastPlace = null; paused = !!S.paused && !S.done; render(); }
+  const kept = store.get(K_GAMES, null), old = store.get(K_GAME, null);
+  games = (Array.isArray(kept) ? kept : validSaved(old) ? [old] : []).filter(validSaved).map(normalize);
+  const cur = store.get(K_CUR, null);
+  S = games.find(g => g.id === cur) || games.filter(g => !g.done).sort((a, b) => b.updated - a.updated)[0] || null;
+  if (S) { paused = !!S.paused && !S.done; render(); }
   else newGame('medium');
 
   boardEl.addEventListener('click', e => {
@@ -681,6 +762,7 @@ function start() {
   });
   padEl.addEventListener('click', e => { const b = e.target.closest('.key'); if (b) enter(+b.dataset.d); });
   $('undoBtn').addEventListener('click', undo);
+  $('redoBtn').addEventListener('click', redo);
   $('eraseBtn').addEventListener('click', erase);
   $('hintBtn').addEventListener('click', () => { closeSheet(); nudge(); });
   $('nudgeMore').addEventListener('click', nudgeMore);
@@ -692,11 +774,17 @@ function start() {
   $('againBtn').addEventListener('click', openSheet);
   $('closeBtn').addEventListener('click', closeSheet);
   $('scrim').addEventListener('click', e => { if (e.target === $('scrim')) closeSheet(); });
-  $('restartBtn').addEventListener('click', e => { if (!confirmTap(e.currentTarget)) return; restart(); closeSheet(); });
+  $('restartBtn').addEventListener('click', e => { if (!confirmTap(e.currentTarget, 'Tap again to restart', inProgress())) return; restart(); closeSheet(); });
+  $('autoToggle').addEventListener('change', e => { settings.auto = e.target.checked; store.set(K_SET, settings); render(); });
+  $('games').addEventListener('click', e => {
+    const del = e.target.closest('.gameDel'), go = e.target.closest('.gameOpen');
+    if (del) { if (confirmTap(del, 'Tap again to delete', true)) { deleteGame(del.dataset.id); drawSheet(); } }
+    else if (go) { openGame(go.dataset.id); closeSheet(); }
+  });
   $('checkToggle').addEventListener('change', e => { settings.check = e.target.checked; store.set(K_SET, settings); render(); });
   $('levels').addEventListener('click', e => {
     const b = e.target.closest('.level');
-    if (!b || !confirmTap(b)) return;
+    if (!b) return;
     closeSheet();
     $('busyCover').hidden = false;
     busy = true;
@@ -706,7 +794,7 @@ function start() {
   });
   document.addEventListener('keydown', e => {
     if (!$('scrim').hidden) { if (e.key === 'Escape') closeSheet(); return; }
-    if (e.metaKey || e.ctrlKey) { if (e.key === 'z') { e.preventDefault(); undo(); } return; }
+    if (e.metaKey || e.ctrlKey) { const k = e.key.toLowerCase(); if (k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); } else if (k === 'y') { e.preventDefault(); redo(); } return; }
     if (e.key >= '1' && e.key <= '9') enter(+e.key);
     else if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') erase();
     else if (e.key === 'n') { S.noteMode = !S.noteMode; render(); }
@@ -740,7 +828,7 @@ function start() {
     });
   }
 }
-window.__sudoku = { generate, generateAsync, search, grade: p => SV.grade(p), solveWith, LEVELS, TECHS, nudgeView, state: () => S };
+window.__sudoku = { games: () => games, generate, generateAsync, search, grade: p => SV.grade(p), solveWith, LEVELS, TECHS, nudgeView, state: () => S };
 start();
 })();
 </script>

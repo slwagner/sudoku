@@ -77,6 +77,30 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
   await cell(other).click(); await key(s.solution[other]).click();
   await page.reload(); await page.waitForSelector('.cell'); s = await st();
   check('the game in progress is still there after closing and reopening', s.values[other] === s.solution[other] && (s.notes[rowMate] >> da & 1) === 1);
+  { // redo, coming back to a game, and showing what's possible
+    const s0 = await st(), y = empties.find(i => !s0.values[i] && i !== rowMate);
+    await cell(y).click(); await key(s0.solution[y]).click(); await page.click('#undoBtn');
+    const u = await st(); await page.click('#redoBtn'); const r = await st();
+    check('redo puts back what undo took away', u.values[y] === 0 && r.values[y] === s0.solution[y] && await page.isDisabled('#redoBtn'));
+    await page.click('#undoBtn');
+    await page.click('#menuBtn');
+    const focusOk = await page.evaluate(() => !document.activeElement.classList.contains('level'));
+    check('opening the menu does not light up a level button', focusOk);
+    await page.click('.level[data-level="easy"]'); await page.waitForFunction(() => window.__sudoku.state().level === 'easy');
+    await page.click('#menuBtn');
+    const rows = await page.locator('.gameOpen').count();
+    await page.locator('.gameOpen:not(.here)').first().click();
+    const back = await st();
+    check('starting a new puzzle keeps the old game, and it can be reopened as it was', rows === 2 && back.level === 'medium' && back.values.join('') === u.values.join('') && back.notes.join() === u.notes.join() && back.undo.length === u.undo.length);
+    await page.click('#menuBtn'); const rows2 = await page.locator('.gameOpen').count(); await page.click('#closeBtn');
+    check('an untouched puzzle is not kept in the list', rows2 === 1);
+    const before = await st();
+    await page.click('#menuBtn'); await page.check('#autoToggle'); await page.click('#closeBtn');
+    const shownOn = await page.locator('.notes i.on').count(), mid = await st();
+    await page.click('#menuBtn'); await page.uncheck('#autoToggle'); await page.click('#closeBtn');
+    const shownOff = await page.locator('.notes i.on').count(), after = await st();
+    check("showing what's possible fills every empty cell, turns off again, and is not an undo step", shownOn > 100 && shownOff === 1 && mid.undo.length === before.undo.length && after.undo.length === before.undo.length && after.notes.join() === before.notes.join());
+  }
   { // nudges: off the main screen, staged, and never write a digit
     const before = await st();
     const offMain = (await page.locator('#tools #hintBtn').count()) === 0 && !(await page.isVisible('#hintBtn'));
