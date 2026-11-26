@@ -159,8 +159,11 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 .sheet {
   background: var(--bg); width: 100%; max-width: 500px; border-radius: 18px 18px 0 0;
   padding: 18px max(16px, env(safe-area-inset-right, 0px)) calc(18px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
-  display: flex; flex-direction: column; gap: 10px; max-height: 100%; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; max-height: 100%; overflow-y: auto; box-sizing: border-box; padding-top: 0;
 }
+.sheetHead { position: sticky; top: 0; z-index: 1; background: var(--bg); display: flex; justify-content: space-between; align-items: center; padding-top: 10px; }
+.sheetHead h2 { margin: 0; }
+.warn { margin: 0; color: var(--bad); font-size: 14px; }
 .sheet h2 { margin: 6px 0 2px; font-size: 18px; }
 .sheet:focus { outline: none; }
 .games { display: flex; flex-direction: column; gap: 6px; }
@@ -179,6 +182,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 .level span { color: var(--muted); font-weight: 500; font-size: 13px; font-variant-numeric: tabular-nums; }
 .level.current { border-color: var(--line-strong); }
 .armed, .level.armed b { color: var(--bad); }
+.gameDel { min-width: 64px; }
 .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 2px; }
 .row label { flex: 1; }
 .row input { width: 22px; height: 22px; accent-color: var(--pen); }
@@ -202,6 +206,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
     </div>
   </div>
 
+  <p class="warn" id="saveWarn" hidden>Could not save. This device is out of storage for the game.</p>
   <div class="boardWrap">
     <div class="board" id="board" role="grid" aria-label="Sudoku grid"></div>
     <div class="cover" id="pauseCover" hidden>
@@ -228,7 +233,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 
 <div class="scrim" id="scrim" hidden>
   <div class="sheet" id="sheet" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
-    <h2 id="sheetTitle">New puzzle</h2>
+    <div class="sheetHead"><h2 id="sheetTitle">New puzzle</h2><button class="plain" id="closeBtn" type="button">Close</button></div>
     <div id="levels" class="levels"></div>
     <h2>Your games</h2>
     <div id="games" class="games"></div>
@@ -250,7 +255,6 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
     </div>
     <div class="sheetActions">
       <button class="plain" id="restartBtn" type="button">Restart this puzzle</button>
-      <button class="plain" id="closeBtn" type="button">Close</button>
     </div>
   </div>
 </div>
@@ -986,22 +990,27 @@ function fillPool() {
 function takePool(level) {
   if (level !== SLOW) return null;
   const g = store.get(K_POOL, null);
-  if (!g || !Array.isArray(g.puzzle) || g.puzzle.length !== 81 || !Array.isArray(g.solution)) return null;
-  try { localStorage.removeItem(K_POOL); } catch (e) { /* ignore */ }
+  store.del(K_POOL);
+  const digits = a => Array.isArray(a) && a.length === 81 && a.every(x => Number.isInteger(x) && x >= 0 && x <= 9);
+  if (!g || !digits(g.puzzle) || !digits(g.solution)) return null;
+  const s = search(g.puzzle, 2);
+  if (s.count !== 1 || s.solution.join('') !== g.solution.join('')) return null;
   return g;
 }
 
 /* ---------- storage (the game still works if the browser refuses it) ---------- */
 const store = {
   get(k, fallback) { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode or full */ } }
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } },
+  raw(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
 };
 const K_GAME = 'sudoku.game.v1', K_GAMES = 'sudoku.games.v1', K_CUR = 'sudoku.current.v1', K_SET = 'sudoku.settings.v1', K_BEST = 'sudoku.best.v2', K_STATS = 'sudoku.pace.v1', K_POOL = 'sudoku.ready.v1';
 
 /* ---------- state ---------- */
 let S = null;      // the game on screen; always one of `games`
 let games = [];    // every game kept on this device, finished or not
-let paused = false, busy = false;
+let paused = false, busy = false, genToken = 0;
 const settings = Object.assign({ check: false, auto: false }, store.get(K_SET, {}));
 const best = store.get(K_BEST, {});
 const pace = store.get(K_STATS, {});
@@ -1012,7 +1021,7 @@ const cellEls = [], keyEls = [];
 function validSaved(g) {
   const arr = (a, hi) => Array.isArray(a) && a.length === 81 && a.every(x => Number.isInteger(x) && x >= 0 && x <= hi);
   return g && LEVELS[g.level] && arr(g.puzzle, 9) && arr(g.solution, 9) && arr(g.values, 9) && arr(g.notes, 1022) &&
-    Array.isArray(g.undo) && typeof g.elapsed === 'number';
+    Array.isArray(g.undo) && g.undo.every(Array.isArray) && (g.redo === undefined || (Array.isArray(g.redo) && g.redo.every(Array.isArray))) && typeof g.elapsed === 'number';
 }
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 function normalize(g) {
@@ -1023,7 +1032,8 @@ function normalize(g) {
   g.hints = g.hints | 0; g.sel = -1; g.focus = 0; g.nudge = null; g.lastPlace = null;
   return g;
 }
-const touched = g => g.undo.length > 0 || g.redo.length > 0 || g.hints > 0 || g.values.some((v, i) => v !== g.puzzle[i]) || g.notes.some(Boolean) || g.excl.some(Boolean);
+/* A game counts as played once anything was entered, a nudge was used, or 20 seconds went by on it. */
+const touched = g => g.elapsed >= 20 || g.undo.length > 0 || g.redo.length > 0 || g.hints > 0 || g.values.some((v, i) => v !== g.puzzle[i]) || g.notes.some(Boolean) || g.excl.some(Boolean);
 const progress = g => { let open = 0, got = 0; for (let i = 0; i < 81; i++) if (!g.puzzle[i]) { open++; if (g.values[i]) got++; } return open ? Math.round(100 * got / open) : 100; };
 /* Leaving a game never throws it away. Only a board nobody touched is dropped. */
 function leaveCurrent() {
@@ -1032,8 +1042,8 @@ function leaveCurrent() {
   if (!S.done && !touched(S)) games = games.filter(g => g !== S);
 }
 function prune() {
-  const old = (a, n) => a.sort((x, y) => y.updated - x.updated).slice(n);
-  const drop = new Set(old(games.filter(g => g.done && g !== S), 30).concat(old(games.filter(g => !g.done && g !== S), 40)));
+  /* Unfinished games are never dropped. Finished ones are only a line in the list; the oldest go after 300. */
+  const drop = new Set(games.filter(g => g.done && g !== S).sort((x, y) => y.updated - x.updated).slice(300));
   if (drop.size) games = games.filter(g => !drop.has(g));
 }
 function newGame(level, made) {
@@ -1056,11 +1066,22 @@ function openGame(id) {
   save(); render();
 }
 function deleteGame(id) { games = games.filter(g => g.id !== id || g === S); save(); }
-function save() { S.paused = paused; S.updated = Date.now(); store.set(K_GAMES, games); store.set(K_CUR, S.id); }
+let saveFailed = false;
+function save() {
+  S.paused = paused; S.updated = Date.now();
+  let ok = store.set(K_GAMES, games);
+  if (!ok) {
+    /* Out of room: give up the undo history of the other games, never the games themselves, and try again. */
+    for (const g of games) if (g !== S) { g.undo = []; g.redo = []; }
+    ok = store.set(K_GAMES, games);
+  }
+  if (ok) { store.set(K_CUR, S.id); store.del(K_GAME); }
+  if (saveFailed !== !ok) { saveFailed = !ok; const w = $('saveWarn'); if (w) w.hidden = ok; }
+}
 const editable = i => !S.puzzle[i] && !S.hinted.includes(i);
 const snap = i => ({ i, v: S.values[i], n: S.notes[i], x: S.excl[i] });
 /* Every change the player makes goes on the undo list; a new change clears the redo list. */
-function remember(changes) { S.undo.push(changes); if (S.undo.length > 3000) S.undo.shift(); S.redo = []; }
+function remember(changes) { S.undo.push(changes); if (S.undo.length > 1000) S.undo.shift(); S.redo = []; }
 /* What is written small in a cell: the player's own notes, or everything still possible when that setting is on. */
 const smallDigits = (i, cand) => S.values[i] ? 0 : settings.auto ? (cand[i] & ~S.excl[i]) : S.notes[i];
 const fmt = s => { const h = s / 3600 | 0, m = (s % 3600) / 60 | 0, x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
@@ -1206,17 +1227,18 @@ function enter(d) {
   afterMove();
 }
 function erase() {
-  if (S.done || paused) return;
+  if (S.done || paused || busy) return;
   const i = S.sel;
   const small = settings.auto ? S.excl[i] : S.notes[i];
   if (i < 0 || !editable(i) || (!S.values[i] && !small)) return;
   remember([snap(i)]);
-  S.values[i] = 0; S.nudge = null;
-  if (settings.auto) S.excl[i] = 0; else S.notes[i] = 0;
+  S.nudge = null;
+  if (S.values[i]) S.values[i] = 0;
+  else if (settings.auto) S.excl[i] = 0; else S.notes[i] = 0;
   afterMove();
 }
 function step(from, to) {
-  if (S.done || paused || !from.length) return;
+  if (S.done || paused || busy || !from.length) return;
   const changes = from.pop(), now = changes.map(c => snap(c.i));
   for (const c of changes) if (editable(c.i)) { S.values[c.i] = c.v; S.notes[c.i] = c.n; S.excl[c.i] = c.x | 0; }
   to.push(now);
@@ -1330,7 +1352,9 @@ function drawSheet() {
     for (const g of done) gh += '<div class="paceRow"><span>' + LEVELS[g.level].name + ' · ' + when(g.updated) + (g.hints ? ' · ' + g.hints + (g.hints === 1 ? ' nudge' : ' nudges') : '') + '</span><b>' + fmt(g.elapsed) + '</b></div>';
     gh += '</details>';
   }
+  const wasOpen = !!($('games').querySelector('details') || {}).open;
   $('games').innerHTML = gh;
+  if (wasOpen && $('games').querySelector('details')) $('games').querySelector('details').open = true;
   $('restartBtn').textContent = 'Restart this puzzle'; $('restartBtn').classList.remove('armed');
   $('hintBtn').hidden = S.done;
   let h = '';
@@ -1343,9 +1367,11 @@ function drawSheet() {
 const inProgress = () => !S.done && touched(S);
 let armed = null;
 /* Anything that throws work away asks first: the first tap only arms the button, the second tap does it. */
+let armedAt = 0;
 function confirmTap(b, ask, needed) {
-  if (!needed || armed === b) { armed = null; return true; }
-  drawSheet();
+  if (!needed) { armed = null; return true; }
+  if (armed === b) { if (Date.now() - armedAt < 700) return false; armed = null; return true; }
+  drawSheet(); armedAt = Date.now();
   const live = b.id ? b : $('games').querySelector('.gameDel[data-id="' + b.dataset.id + '"]');
   armed = live; live.classList.add('armed'); live.textContent = ask;
   return false;
@@ -1356,8 +1382,11 @@ function closeSheet() { $('scrim').hidden = true; }
 /* ---------- wiring ---------- */
 function start() {
   build();
-  const kept = store.get(K_GAMES, null), old = store.get(K_GAME, null);
-  games = (Array.isArray(kept) ? kept : validSaved(old) ? [old] : []).filter(validSaved).map(normalize);
+  const rawList = store.raw(K_GAMES), kept = store.get(K_GAMES, null), old = store.get(K_GAME, null);
+  const list = Array.isArray(kept) ? kept : validSaved(old) ? [old] : [];
+  /* If the saved list is damaged in any way, keep an untouched copy before anything is written over it. */
+  if (rawList && (!Array.isArray(kept) || !kept.every(validSaved))) { try { localStorage.setItem('sudoku.games.damaged.' + Date.now(), rawList); } catch (e) { /* no room */ } }
+  games = list.filter(validSaved).map(normalize);
   const cur = store.get(K_CUR, null);
   S = games.find(g => g.id === cur) || games.filter(g => !g.done).sort((a, b) => b.updated - a.updated)[0] || null;
   if (S) { paused = !!S.paused && !S.done; render(); }
@@ -1365,7 +1394,7 @@ function start() {
 
   boardEl.addEventListener('click', e => {
     const b = e.target.closest('.cell');
-    if (!b || paused) return;
+    if (!b || paused || busy) return;
     const i = +b.dataset.i;
     S.sel = S.sel === i ? -1 : i; S.focus = 0;
     render();
@@ -1384,11 +1413,11 @@ function start() {
   $('againBtn').addEventListener('click', openSheet);
   $('closeBtn').addEventListener('click', closeSheet);
   $('scrim').addEventListener('click', e => { if (e.target === $('scrim')) closeSheet(); });
-  $('restartBtn').addEventListener('click', e => { if (!confirmTap(e.currentTarget, 'Tap again to restart', inProgress())) return; restart(); closeSheet(); });
+  $('restartBtn').addEventListener('click', e => { if (!confirmTap(e.currentTarget, 'Tap again to restart', S.done || touched(S))) return; restart(); closeSheet(); });
   $('autoToggle').addEventListener('change', e => { settings.auto = e.target.checked; store.set(K_SET, settings); render(); });
   $('games').addEventListener('click', e => {
     const del = e.target.closest('.gameDel'), go = e.target.closest('.gameOpen');
-    if (del) { if (confirmTap(del, 'Tap again to delete', true)) { deleteGame(del.dataset.id); drawSheet(); } }
+    if (del) { if (confirmTap(del, 'Sure?', true)) { deleteGame(del.dataset.id); drawSheet(); } }
     else if (go) { openGame(go.dataset.id); closeSheet(); }
   });
   $('checkToggle').addEventListener('change', e => { settings.check = e.target.checked; store.set(K_SET, settings); render(); });
@@ -1398,7 +1427,8 @@ function start() {
     closeSheet();
     $('busyCover').hidden = false;
     busy = true;
-    const ready = g => { busy = false; newGame(b.dataset.level, g); $('busyCover').hidden = true; setTimeout(fillPool, 3000); };
+    const mine = ++genToken;   // if another level is tapped while this one is being made, the earlier one is ignored
+    const ready = g => { if (mine !== genToken) return; busy = false; newGame(b.dataset.level, g); $('busyCover').hidden = true; setTimeout(fillPool, 3000); };
     const kept = takePool(b.dataset.level);
     if (kept) ready(kept); else setTimeout(() => generateAsync(b.dataset.level, ready), 30);
   });
