@@ -70,6 +70,9 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
   padding: 9px 16px; font-weight: 600; min-height: 44px;
 }
 .chip small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+.check { display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; cursor: pointer; box-sizing: border-box; font-size: 15px; }
+.check input { width: 20px; height: 20px; margin: 0; accent-color: var(--pen); }
+.top .chip { padding-inline: 12px; }
 .timer { font-variant-numeric: tabular-nums; min-width: 104px; text-align: center; }
 
 .boardWrap { position: relative; width: min(100%, max(260px, calc(100vh - 290px))); align-self: center; }
@@ -195,6 +198,7 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
 <div class="app">
   <div class="top" id="top">
     <button class="chip" id="menuBtn" type="button" aria-haspopup="dialog"><span id="levelName">Medium</span><small>Menu</small></button>
+    <label class="chip check" for="autoToggle"><input type="checkbox" id="autoToggle"><span>Possible</span></label>
     <button class="chip timer" id="timerBtn" type="button" aria-label="Pause"><span id="clock">0:00</span><small id="timerHint">Pause</small></button>
   </div>
 
@@ -238,10 +242,6 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
     <h2>Your games</h2>
     <div id="games" class="games"></div>
     <div class="row">
-      <label for="autoToggle">Show what's possible in every cell</label>
-      <input type="checkbox" id="autoToggle">
-    </div>
-    <div class="row">
       <label for="checkToggle">Mark wrong digits in red</label>
       <input type="checkbox" id="checkToggle">
     </div>
@@ -254,9 +254,9 @@ button:focus-visible { outline: 2px solid var(--pen); outline-offset: 2px; }
       <button class="plain small" id="hintBtn" type="button">Nudge me</button>
     </div>
     <div class="sheetActions">
-      <button class="plain" id="restartBtn" type="button">Restart this puzzle</button>
+      <button class="plain small" id="clearBtn" type="button">Clear this puzzle</button>
     </div>
-    <p class="quiet" id="ver">Version 2026-11-26 09:32 UTC</p>
+    <p class="quiet" id="ver">Version 2026-11-27 05:16 UTC</p>
   </div>
 </div>
 
@@ -1254,11 +1254,17 @@ function afterMove() {
   }
   save(); render();
 }
-function restart() {
-  S.values = S.puzzle.slice(); S.notes = new Array(81).fill(0); S.excl = new Array(81).fill(0); S.hinted = []; S.undo = []; S.redo = [];
-  S.elapsed = 0; S.hints = 0; S.done = false; S.record = false; S.sel = -1; S.focus = 0; S.nudge = null; S.known = []; S.lastPlace = null; S.lastHints = 0; S.timed = [];
-  paused = false; save(); render();
+/* Clears everything the player entered. It is one undo step, so Undo brings it all back; the clock keeps going. */
+function clearPuzzle() {
+  if (S.done || busy) return;
+  const changes = [];
+  for (let i = 0; i < 81; i++) if (editable(i) && (S.values[i] || S.notes[i] || S.excl[i])) { changes.push(snap(i)); S.values[i] = 0; S.notes[i] = 0; S.excl[i] = 0; }
+  if (!changes.length) return;
+  remember(changes);
+  S.sel = -1; S.focus = 0; S.nudge = null; paused = false;
+  save(); render();
 }
+const hasEntries = () => S.values.some((v, i) => v !== S.puzzle[i]) || S.notes.some(Boolean) || S.excl.some(Boolean);
 
 /* ---------- drawing ---------- */
 function build() {
@@ -1314,6 +1320,7 @@ function render() {
   padEl.classList.toggle('noting', S.noteMode);
   $('notesBtn').setAttribute('aria-pressed', S.noteMode ? 'true' : 'false');
   $('notesBtn').textContent = S.noteMode ? 'Notes on' : 'Notes';
+  $('autoToggle').checked = !!settings.auto;
   $('undoBtn').disabled = !S.undo.length || S.done;
   $('redoBtn').disabled = !S.redo.length || S.done;
   $('levelName').textContent = LEVELS[S.level].name;
@@ -1337,7 +1344,7 @@ function drawSheet() {
     b.className = 'level';
     b.innerHTML = '<b>' + L.name + '</b><span>' + L.note + (best[k] ? ' · best ' + fmt(best[k]) : '') + '</span>';
   }
-  $('checkToggle').checked = !!settings.check; $('autoToggle').checked = !!settings.auto;
+  $('checkToggle').checked = !!settings.check;
   const when = ts => { const d = new Date(ts), n = new Date(); return d.toDateString() === n.toDateString() ? 'today' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
   const open = games.filter(g => !g.done).sort((a, b) => (b === S) - (a === S) || b.updated - a.updated);
   const done = games.filter(g => g.done).sort((a, b) => b.updated - a.updated);
@@ -1356,7 +1363,7 @@ function drawSheet() {
   const wasOpen = !!($('games').querySelector('details') || {}).open;
   $('games').innerHTML = gh;
   if (wasOpen && $('games').querySelector('details')) $('games').querySelector('details').open = true;
-  $('restartBtn').textContent = 'Restart this puzzle'; $('restartBtn').classList.remove('armed');
+  $('clearBtn').textContent = 'Clear this puzzle'; $('clearBtn').classList.remove('armed'); $('clearBtn').hidden = S.done || !hasEntries();
   $('hintBtn').hidden = S.done;
   let h = '';
   for (const k of Object.keys(KINDS)) {
@@ -1414,7 +1421,7 @@ function start() {
   $('againBtn').addEventListener('click', openSheet);
   $('closeBtn').addEventListener('click', closeSheet);
   $('scrim').addEventListener('click', e => { if (e.target === $('scrim')) closeSheet(); });
-  $('restartBtn').addEventListener('click', e => { if (!confirmTap(e.currentTarget, 'Tap again to restart', S.done || touched(S))) return; restart(); closeSheet(); });
+  $('clearBtn').addEventListener('click', e => { if (!hasEntries()) return; if (!confirmTap(e.currentTarget, 'Tap again to clear every digit and note', true)) return; clearPuzzle(); closeSheet(); });
   $('autoToggle').addEventListener('change', e => { settings.auto = e.target.checked; store.set(K_SET, settings); render(); });
   $('games').addEventListener('click', e => {
     const del = e.target.closest('.gameDel'), go = e.target.closest('.gameOpen');

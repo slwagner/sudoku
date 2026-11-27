@@ -95,11 +95,12 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
     await page.click('#menuBtn'); const rows2 = await page.locator('.gameOpen').count(); await page.click('#closeBtn');
     check('an untouched puzzle is not kept in the list', rows2 === 1);
     const before = await st();
-    await page.click('#menuBtn'); await page.check('#autoToggle'); await page.click('#closeBtn');
+    const onMain = await page.isVisible('#top #autoToggle');
+    await page.check('#autoToggle');
     const shownOn = await page.locator('.notes i.on').count(), mid = await st();
-    await page.click('#menuBtn'); await page.uncheck('#autoToggle'); await page.click('#closeBtn');
+    await page.uncheck('#autoToggle');
     const shownOff = await page.locator('.notes i.on').count(), after = await st();
-    check("showing what's possible fills every empty cell, turns off again, and is not an undo step", shownOn > 100 && shownOff === 1 && mid.undo.length === before.undo.length && after.undo.length === before.undo.length && after.notes.join() === before.notes.join());
+    check("showing what's possible fills every empty cell, turns off again, and is not an undo step; the checkbox is on the main screen", onMain && shownOn > 100 && shownOff === 1 && mid.undo.length === before.undo.length && after.undo.length === before.undo.length && after.notes.join() === before.notes.join());
   }
   { // the reviewer's data-loss cases
     await page.evaluate(() => { const s = window.__sudoku.state(); window.__keepId = s.id; });
@@ -140,9 +141,11 @@ const check = (name, ok, detail = '') => { results.push({ name, ok }); console.l
     check('with a wrong digit on the board, the nudge says a digit is wrong', /wrong/.test(await page.textContent('#nudgeText')));
     await cell(x).click(); await page.click('#eraseBtn');
     check('making a move closes the nudge', !(await page.isVisible('#nudge')));
-    const other2 = other; await page.click('#menuBtn'); await page.click('#restartBtn'); const one = await st();
-    check('Restart needs a second tap when a game is in progress', one.values[other] === one.solution[other] && (await page.textContent('#restartBtn')) === 'Tap again to restart');
-    await page.click('#closeBtn');
+    await page.click('#menuBtn'); await page.click('#clearBtn'); const one = await st();
+    check('Clear needs a second tap', one.values[other] === one.solution[other] && /Tap again/.test(await page.textContent('#clearBtn')));
+    await page.waitForTimeout(800); await page.click('#clearBtn'); const two = await st();
+    await page.click('#undoBtn'); const three = await st();
+    check('Clear empties every digit and note he entered, keeps the clock, and one Undo brings it all back', two.values.join('') === two.puzzle.join('') && !two.notes.some(Boolean) && two.elapsed >= one.elapsed && three.values.join('') === one.values.join('') && three.notes.join() === one.notes.join());
     await page.click('#timerBtn'); await page.reload(); await page.waitForSelector('.cell');
     check('a paused game is still paused after reopening', await page.isVisible('#pauseCover'));
     await page.click('#resumeBtn');
